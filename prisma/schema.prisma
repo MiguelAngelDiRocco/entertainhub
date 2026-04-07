@@ -1,0 +1,417 @@
+// prisma/schema.prisma
+// EntertainHub — Schema completo
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ============================================================
+// AUTH (NextAuth v5)
+// ============================================================
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ============================================================
+// USUARIOS
+// ============================================================
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified DateTime?
+  username      String    @unique
+  displayName   String
+  avatar        String?
+  bio           String?   @db.Text
+
+  // XP y niveles
+  totalXP       Int @default(0)
+  gamingXP      Int @default(0)
+  streamingXP   Int @default(0)
+  currentLevel  Int @default(1)
+  gamingLevel   Int @default(1)
+  streamingLevel Int @default(1)
+
+  // Gamification
+  currentStreak   Int       @default(0)
+  longestStreak   Int       @default(0)
+  lastActiveAt    DateTime?
+  lastStreakDate  DateTime?
+
+  // Configuración
+  isPublicProfile Boolean @default(true)
+  showInLeaderboard Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relaciones NextAuth
+  accounts Account[]
+  sessions Session[]
+
+  // Relaciones del proyecto
+  platforms        UserPlatform[]
+  gameSessions     GameSession[]
+  watchSessions    WatchSession[]
+  achievements     UserAchievement[]
+  notifications    Notification[]
+  sentRequests     FriendRequest[]  @relation("FriendRequestSender")
+  receivedRequests FriendRequest[]  @relation("FriendRequestReceiver")
+  friendsAsA       Friendship[]     @relation("FriendshipUserA")
+  friendsAsB       Friendship[]     @relation("FriendshipUserB")
+  xpEvents         XPEvent[]
+
+  @@index([username])
+  @@index([totalXP])
+}
+
+// ============================================================
+// PLATAFORMAS
+// ============================================================
+
+enum Platform {
+  STEAM
+  RIOT_LOL
+  RIOT_VALORANT
+  RIOT_TFT
+  EPIC_GAMES
+  EA_ORIGIN
+  NETFLIX
+  DISNEY_PLUS
+  PRIME_VIDEO
+  HBO_MAX
+  APPLE_TV
+  CRUNCHYROLL
+  MANUAL
+}
+
+model UserPlatform {
+  id             String    @id @default(cuid())
+  userId         String
+  platform       Platform
+  platformUserId String?   // ID del usuario en esa plataforma
+  platformUsername String? // Username visible en esa plataforma
+  accessToken    String?   @db.Text // Encriptado
+  refreshToken   String?   @db.Text // Encriptado
+  tokenExpiresAt DateTime?
+  metadata       Json?     // Datos extra por plataforma (ej: region de Riot)
+  isActive       Boolean   @default(true)
+  lastSyncAt     DateTime?
+  syncStatus     SyncStatus @default(NEVER_SYNCED)
+  syncError      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, platform])
+  @@index([userId])
+}
+
+enum SyncStatus {
+  NEVER_SYNCED
+  SYNCING
+  SUCCESS
+  ERROR
+}
+
+// ============================================================
+// GAMING
+// ============================================================
+
+model Game {
+  id          String   @id @default(cuid())
+  externalId  String   // ID en la plataforma origen
+  platform    Platform
+  name        String
+  coverUrl    String?
+  genre       String[]
+  developer   String?
+  releaseYear Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sessions GameSession[]
+
+  @@unique([externalId, platform])
+  @@index([name])
+}
+
+model GameSession {
+  id          String   @id @default(cuid())
+  userId      String
+  gameId      String
+  platform    Platform
+  startedAt   DateTime
+  endedAt     DateTime
+  durationMin Int      // Duración en minutos
+  xpEarned    Int
+  isFirstOfDay Boolean @default(false)
+  streakBonus  Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  game Game @relation(fields: [gameId], references: [id])
+
+  @@index([userId])
+  @@index([userId, startedAt])
+  @@index([gameId])
+}
+
+// ============================================================
+// STREAMING
+// ============================================================
+
+enum ContentType {
+  MOVIE
+  SERIES_EPISODE
+  SERIES        // Para representar una serie completa (stats)
+  SHORT
+  DOCUMENTARY
+}
+
+model Content {
+  id          String      @id @default(cuid())
+  externalId  String      // ID en TMDB u otra fuente
+  tmdbId      Int?
+  title       String
+  type        ContentType
+  posterUrl   String?
+  backdropUrl String?
+  genre       String[]
+  releaseYear Int?
+
+  // Para series
+  seriesId    String?   // Si es episodio, apunta al Content de la serie padre
+  season      Int?
+  episode     Int?
+
+  runtimeMin  Int?      // Duración en minutos
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  watchSessions WatchSession[]
+  childContent  Content[]    @relation("SeriesEpisodes")
+  parentSeries  Content?     @relation("SeriesEpisodes", fields: [seriesId], references: [id])
+
+  @@unique([externalId, type])
+  @@index([title])
+  @@index([tmdbId])
+}
+
+model WatchSession {
+  id          String   @id @default(cuid())
+  userId      String
+  contentId   String
+  platform    Platform
+  watchedAt   DateTime // Cuándo fue visto
+  durationMin Int      // Minutos efectivamente vistos
+  xpEarned    Int
+  isFirstOfDay Boolean @default(false)
+  streakBonus  Boolean @default(false)
+  importedAt  DateTime? // Si fue importado, cuándo
+
+  createdAt DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  content Content @relation(fields: [contentId], references: [id])
+
+  @@index([userId])
+  @@index([userId, watchedAt])
+  @@index([contentId])
+}
+
+// ============================================================
+// XP EVENTS (log de todos los XP ganados)
+// ============================================================
+
+enum XPEventType {
+  GAME_SESSION
+  WATCH_SESSION
+  ACHIEVEMENT_UNLOCK
+  FRIEND_INVITE
+  DAILY_BONUS
+  STREAK_BONUS
+  SERIES_COMPLETE
+  LEVEL_UP_BONUS
+  MANUAL_CORRECTION
+}
+
+model XPEvent {
+  id        String     @id @default(cuid())
+  userId    String
+  type      XPEventType
+  xpAmount  Int
+  metadata  Json?      // Referencia al evento origen (sessionId, achievementId, etc.)
+  createdAt DateTime   @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, createdAt])
+}
+
+// ============================================================
+// LOGROS (ACHIEVEMENTS)
+// ============================================================
+
+enum AchievementCategory {
+  GAMING
+  STREAMING
+  SOCIAL
+  LEVEL
+  STREAK
+  SPECIAL
+}
+
+model Achievement {
+  id          String              @id @default(cuid())
+  key         String              @unique // ej: "first_100_gaming_hours"
+  name        String
+  description String
+  iconUrl     String?
+  category    AchievementCategory
+  xpReward    Int
+  isHidden    Boolean             @default(false) // Logros sorpresa
+  sortOrder   Int                 @default(0)
+
+  // Condición (flexible para diferentes tipos)
+  conditionType  String  // "gaming_hours", "streaming_hours", "level", "friends", etc.
+  conditionValue Int     // Valor umbral
+
+  createdAt DateTime @default(now())
+
+  unlocks UserAchievement[]
+}
+
+model UserAchievement {
+  id            String    @id @default(cuid())
+  userId        String
+  achievementId String
+  unlockedAt    DateTime  @default(now())
+  notified      Boolean   @default(false)
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  achievement Achievement @relation(fields: [achievementId], references: [id])
+
+  @@unique([userId, achievementId])
+  @@index([userId])
+}
+
+// ============================================================
+// SISTEMA SOCIAL
+// ============================================================
+
+model Friendship {
+  id        String   @id @default(cuid())
+  userAId   String
+  userBId   String
+  createdAt DateTime @default(now())
+
+  userA User @relation("FriendshipUserA", fields: [userAId], references: [id], onDelete: Cascade)
+  userB User @relation("FriendshipUserB", fields: [userBId], references: [id], onDelete: Cascade)
+
+  @@unique([userAId, userBId])
+  @@index([userAId])
+  @@index([userBId])
+}
+
+enum FriendRequestStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  CANCELLED
+}
+
+model FriendRequest {
+  id         String              @id @default(cuid())
+  senderId   String
+  receiverId String
+  status     FriendRequestStatus @default(PENDING)
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+
+  sender   User @relation("FriendRequestSender", fields: [senderId], references: [id], onDelete: Cascade)
+  receiver User @relation("FriendRequestReceiver", fields: [receiverId], references: [id], onDelete: Cascade)
+
+  @@unique([senderId, receiverId])
+  @@index([receiverId, status])
+}
+
+// ============================================================
+// NOTIFICACIONES
+// ============================================================
+
+enum NotificationType {
+  FRIEND_REQUEST
+  FRIEND_ACCEPT
+  LEVEL_UP
+  ACHIEVEMENT_UNLOCK
+  FRIEND_LEVEL_UP
+  FRIEND_SURPASSED_YOU
+  LEADERBOARD_CHANGE
+  SYSTEM
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  type      NotificationType
+  title     String
+  body      String
+  data      Json?            // Metadata adicional (fromUserId, achievementId, etc.)
+  isRead    Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@index([userId, createdAt])
+}
